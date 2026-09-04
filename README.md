@@ -1,0 +1,70 @@
+# UNM Traffic Signal Follower — Summer Research Internship
+
+Reinforcement learning-based controller for a single ego vehicle that must simultaneously
+(1) comply with a traffic signal and (2) maintain a safe following distance behind a lead
+vehicle, developed as part of a digital twin of the UNM campus front junction.
+
+## Environment
+
+- MATLAB R2025b, Simulink R2025b, Reinforcement Learning Toolbox,
+- RoadRunner R2026a
+
+## Repository structure
+
+```
+Summer_Intern/
+├── UNM_FrontJunct-V2.rrscene        RoadRunner scene: reconstructed UNM junction
+├── UNM_Eg-Test2.rrscenario          RoadRunner scenario (ego + lead vehicle, signal)
+├── RoadRunner&Simulink_Cosimulate.mlx   Script to launch RoadRunner + open the Simulink model
+└── Simulink/
+    ├── UNM_TrafficSignalFollower.slx     Top-level Simulink model (final RL-controlled version)
+    │
+    ├── UNMTrafficSignalFollower_Block.m  Manual rule-based baseline controller
+    ├── UNM_TrafficSignalV2.m             Baseline signal-reading System object
+    ├── UNM_TrafficSignalVisualization.m  GUI for visualising signal/distance state
+    ├── UNMPathEvaluator_Block.m          Path-following helper
+    │
+    ├── UNM_TrafficSignalV3.m             RL-era signal/junction-state System object
+    ├── UNM_LeadVehicleRelativeState.m    Relative distance/velocity to lead vehicle
+    ├── UNM_VRefCalculator.m              Reference-velocity (vRef) calculation
+    ├── UNM_RLRewardFcn.m                 Reward / isDone monitor (deployment-time safety check)
+    ├── UNM_AccelToSpeed.m                Converts agent's acceleration command to a speed command
+    ├── UNM_Setup.m                       Model/co-simulation setup script
+    ├── UNM_loadRRBusObject.m             Loads required Simulink bus objects
+    │
+    ├── SurrogateTrafficEnv.m             Pure-MATLAB surrogate environment (PPO version)
+    ├── SurrogateTrafficEnvACC.m          Pure-MATLAB surrogate environment (final DDPG/ACC version)
+    ├── Run_SurrogateEnv.m                Quick sanity-check script for the surrogate environment
+    ├── Run_Surrogate_DDPG.mlx            Full DDPG training script (builds agent, trains, evaluates)
+    ├── Evaluate_DDPG.m                   30-trial batch evaluation (collision/violation/completion)
+    ├── Classify_violations.m             Splits violations into avoidable vs. dilemma-zone
+    │
+    ├── trained_agent_ACC.mat             Final trained DDPG agent (deployed to the live model)
+    ├── trained_agent.mat                 Earlier trained agent (PPO / pre-final-tuning)
+    ├── savedAgents/                      Training checkpoints (PPO run)
+    └── savedAgents_ACC/                  Training checkpoints (DDPG run)
+```
+
+## Running this project
+
+**1. Train the agent (no RoadRunner required):**
+Run `Run_Surrogate_DDPG.mlx` in MATLAB. This trains a DDPG agent against
+`SurrogateTrafficEnvACC.m` and saves the result as `trained_agent_ACC.mat`.
+
+**2. Deploy to the live RoadRunner model:**
+Run `RR_Simulink_Co-V2.mlx` to launch RoadRunner,open
+`UNM_TrafficSignalFollower.slx` and run a RoadRunner simulation. 
+
+**3. Evaluate the trained agent:**
+Run `Evaluate_DDPG.m` for a 30-trial batch evaluation, then `Classify_violations.m`
+to split any signal violations into avoidable vs. dilemma-zone.
+
+
+
+- A residual avoidable signal-violation rate remains under the current trained agent
+  (see report, Results and Discussion, Section C).
+
+## Note on repository contents
+
+An unrelated Unreal Engine project (`ProjectFiles_UAV/`) may be present in earlier commits
+and should be disregarded / removed — it is not part of this project.
