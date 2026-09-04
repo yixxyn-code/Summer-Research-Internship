@@ -1,0 +1,14 @@
+{
+	"Targets": [
+		{
+			"Name": "AutoVrtlEnv",
+			"Path": "..\\Source\\AutoVrtlEnv.Target.cs",
+			"Type": "Game"
+		},
+		{
+			"Name": "AutoVrtlEnvEditor",
+			"Path": "..\\Source\\AutoVrtlEnvEditor.Target.cs",
+			"Type": "Editor"
+		}
+	]
+}

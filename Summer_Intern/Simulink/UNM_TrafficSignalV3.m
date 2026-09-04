@@ -1,0 +1,443 @@
+classdef UNM_TrafficSignalV3 < matlab.System
+    %HelperGetTrafficSignal Extracts the signal state for the given signal ID.
+    % From all traffic signal runtime information, this system object filters
+    % out the traffic signal runtime information for the given traffic signal
+    % actor id.
+    %
+    % NOTE: This is a helper file for example purposes and
+    % may be removed or modified in the future.
+
+    % Copyright 2024 The MathWorks, Inc.
+
+    % Public, tunable properties
+    properties(Nontunable)
+        % Approaching Signal ID
+        SignalID = 9;
+        % Ego Actor ID
+        EgoID = 1;
+        % RoadRunner HD Map
+        RRHDMap = roadrunnerHDMap;
+    end
+
+    % Pre-computed constants or internal states
+    properties (Access = private)
+        % Ego actor simulation object
+        EgoActorSim
+        % All lane ID's
+        AllLaneID
+        % All junction lane ID's
+        JunctionLaneID
+        % RoadRunner Simulation Object
+        RRSimObj
+
+        % Junction latch state
+        WasInsideJunction = false;   % true while we're latched "inside" a junction
+        LatchedJuncIdx = -1;         % which junction we're latched to
+    end
+
+    % New tunable properties for normalization bounds
+    properties (Nontunable)
+        MaxStopDistance (1,1) double = 100   % meters, clip beyond this
+        MaxPhaseDuration (1,1) double = 60   % seconds, clip beyond this
+    end
+
+    methods (Access = protected)
+        %% Runs once at simulation start
+        function setupImpl(obj)
+            % Get the RoadRunner Scenario Simulation object
+            obj.RRSimObj = Simulink.ScenarioSimulation.find('ScenarioSimulation', 'SystemObject', obj);
+
+            % Retrieve the ActorSimulation object from rrSim
+            actorSim = obj.RRSimObj.get("ActorSimulation");
+
+            % Extract the "ID" attribute for each actor in the simulation
+            allActorID = cellfun(@(c) c.getAttribute("ID"), actorSim);
+            %cellfun(funct,arr)-apply funct to each cell of the cell
+            %array(=arr that each cell containes mixed type elements)
+            %@(c)...is an anonymous funct, "." is dot operator that applies funct to each celL
+
+            % Ego Actor idx
+            idx = allActorID == obj.EgoID;
+
+            % Ego Actor Simulation object
+            obj.EgoActorSim = actorSim{idx};
+
+            %Pre-load all lanes and junction data frm HD Map
+            % All lane ID
+            obj.AllLaneID = string(vertcat(obj.RRHDMap.Lanes.ID));
+
+            % Junction Lane ID
+            obj.JunctionLaneID = arrayfun(@(jc) string(vertcat(jc.Lanes.ID)), obj.RRHDMap.Junctions, 'UniformOutput', false);
+
+        end
+
+        function releaseImpl(obj)
+            obj.RRSimObj = [];
+            obj.EgoActorSim = [];
+        end
+
+        %% Runs every timestep
+        function [state, tLeft, distToStop,latchedInJunction,isJunctionRelevant] = stepImpl(obj,egoPose,pathAction,signalRuntime)
+            % Initialize outputs (Default o/p if nothing found)
+            state = EnumConfigurationType.Red;
+            tLeft = 0;
+            distToStop = -1;
+            latchedInJunction = false;
+
+            % For the given controller & signal ID find the bulb state and
+            % time left
+            allSignalActorID = arrayfun(@(x) double(x.ActorRuntime.ActorID), signalRuntime);
+            signalIdx = find(allSignalActorID == obj.SignalID);
+
+            if isempty(signalIdx)
+                warning('UNM_TrafficSignalV2:stepImpl','No signalRuntime found for SignalID %d', obj.SignalID);
+            else
+                %%Get its current phase info (State colour? Tleft?)
+                turnConfigIdx = signalRuntime(signalIdx).SignalConfiguration.NumTurnConfiguration;
+                tLeft = signalRuntime(signalIdx).SignalConfiguration.TurnConfiguration(turnConfigIdx).TimeLeft;
+                state = signalRuntime(signalIdx).SignalConfiguration.TurnConfiguration(turnConfigIdx).ConfigurationType;
+            end
+
+
+            %% Find the distance to stop line
+            %Get ego current lane position & which junction it's heading to
+            egoLaneLoc = obj.EgoActorSim.getAttribute("LaneLocation");
+            [~,juncIdx] = obj.getApproachingJunction(string(egoLaneLoc.LocationOnLane.LaneID));
+
+            %Get ego current lane id + whether the lane itself is a
+            %junction lane
+            currLaneID = string(egoLaneLoc.LocationOnLane.LaneID);
+            [isCurrLaneJunction, ~] = isJunctionLane(obj, currLaneID);
+
+            handled = false;   % true once distToStop is finalized by a "short" branch
+
+            %% --- LATCH LOGIC ---
+            % If we're currently latched "inside" a junction, only release the
+            % latch once ego's current lane is confirmed NOT a junction lane.
+            if obj.WasInsideJunction
+                if isCurrLaneJunction
+                    % Still physically inside/traversing the junction lane(s).
+                    distToStop = 0;
+                    latchedInJunction = true;   % <-- still latched, mark it
+                    handled = true;
+                    fprintf('[Latched Inside Junction %d] distToStop = 0\n', obj.LatchedJuncIdx);
+                else
+                    % Ego has moved onto a normal (non-junction) lane -> unlatch.
+                    fprintf('[Junction %d released] now on lane %s\n', obj.LatchedJuncIdx, currLaneID);
+                    obj.WasInsideJunction = false;
+                    obj.LatchedJuncIdx = -1;
+                    % fall through to normal approaching-junction logic below
+                end
+            end
+
+
+            %% Normal path: find approaching junction from current lane
+
+            % Debugging info - display key variables to trace why distToStop remains -1
+            fprintf('\n[UNM_TrafficSignalV2] Ego IsOnLane: %d, Ego LaneID: %s, ApproachingJunctionIdx: %d\n', ...
+                double(egoLaneLoc.IsOnLane), string(egoLaneLoc.LocationOnLane.LaneID), juncIdx);
+
+            if ~handled && egoLaneLoc.IsOnLane && juncIdx ~= -1 % Not latched in a junction, on lane and approaching a junction
+
+                % Vehicle Path & Path points
+                vehPath = pathAction.PathTarget.Path; % Nx3
+                numPts = pathAction.PathTarget.NumPoints;
+
+                % Ego position
+                egoPos = egoPose.ActorRuntime.Pose(1:3,4)'; %Match Nx3
+
+                % If ego is already inside ANY junction, distance is 0
+                if isInsideJunction(obj,  egoPos , juncIdx)
+                    distToStop = 0;
+                    obj.WasInsideJunction = true;
+                    obj.LatchedJuncIdx = juncIdx;
+                    latchedInJunction = true;
+                    handled = true;
+                    fprintf('[Entered Junction %d] distToStop = 0 (latching)\n', juncIdx);
+
+                end
+
+                % --- FIX: project ego onto nearest SEGMENT, not nearest VERTEX ---
+                P = vehPath(1:numPts,:);           % Get the path(e.g. path of P1 to Pk+1)
+                segStarts = P(1:end-1,:);          % [P1, P2, P3, ..., Pk] Start points of eachs seg
+                segEnds   = P(2:end,:);            % [P2, P3, P4, ..., Pk+1] End points of each seg
+                segVec    = segEnds - segStarts;   % the direction+length (vector) of each segment
+                segLenSq  = sum(segVec.^2,2);
+
+                toEgo = egoPos - segStarts;                     % vector from start points to ego
+                t = sum(toEgo.*segVec,2) ./ max(segLenSq,eps);  % how far along P1->P2, as a fraction
+                t = min(max(t,0),1);                            % clamp onto the segment (cannot go pass P1/P2)
+
+                projPts  = segStarts + t.*segVec;               % the actual point on the line closest to ego
+                distToProj = vecnorm(egoPos-projPts,2,2);       % how far ego is from the LINE itself (sideways distance), for every seg
+                [~, segIdx] = min(distToProj);                  % which segment is ego closest to (smallest sideways distance)?
+
+                stIdx = segIdx;                          % index of segment ego is on
+                egoToStIdx = distToProj(segIdx);         % continuous distance, no snapping: how far off-path ego is
+
+
+
+
+                % Find the junction the path actually enters, starting from stIdx+1
+                % (stIdx itself is the segment ego is currently ON, not yet reached)
+                entryIdx = -1;
+                crossFrac = 1;   % fraction along the final segment where boundary is crossed
+
+                % Pass 1: find the first waypoint that's inside the junction
+                for i = stIdx+1:numPts
+                    if isInsideJunction(obj, [P(i,:) 0], juncIdx)
+                        entryIdx = i;
+                        fprintf('[entry] J%d at [%.2f %.2f]\n', juncIdx, P(i,1), P(i,2));
+                        break;
+                    end
+                end
+
+                % Pass 2: refine the exact crossing point within the final segment
+                if entryIdx > 1
+                    a = P(entryIdx-1,:);   % known OUTSIDE
+                    b = P(entryIdx,:);     % known INSIDE
+                    lo = 0; hi = 1;
+                    for iter = 1:12
+                        mid = (lo+hi)/2;
+                        testPt = a + mid*(b-a);
+                        if isInsideJunction(obj, [testPt 0], juncIdx)
+                            hi = mid;
+                        else
+                            lo = mid;
+                        end
+                    end
+                    crossFrac = hi;
+                end
+
+
+                %Debug
+                fprintf('stIdx=%d  ego=[%.2f %.2f]  path[stIdx]=[%.2f %.2f]  egoToStIdx=%.2f\n', ...
+                    stIdx, egoPos(1), egoPos(2), vehPath(stIdx,1), vehPath(stIdx,2), egoToStIdx);
+                %
+
+                if entryIdx > 0
+                    %Computes full length of all complete segments between
+                    %ego's current segment to final segment
+                    if entryIdx - 1 >= stIdx + 1
+                        diffs = diff(vehPath(stIdx+1:entryIdx-1,:), 1, 1);
+                        pathRemainder = sum(sqrt(sum(diffs.^2, 2)));
+                    else
+                        pathRemainder = 0;
+                    end
+
+                    % Partial distance into the final (crossing) segment only
+                    finalSegLen = norm(P(entryIdx,:) - P(entryIdx-1,:));
+                    partialFinalSeg = crossFrac * finalSegLen;
+
+                    %Remaining distance of ego's current segment
+                    remOnCurrSeg = norm(P(stIdx+1,:) - projPts(segIdx,:));
+                    distToStop = remOnCurrSeg + pathRemainder + partialFinalSeg;
+
+                    fprintf('[distToStop] = %.3f m  (remOnCurrSeg=%.2f + pathRemainder=%.2f + partialFinalSeg=%.2f, crossFrac=%.3f)\n', ...
+                        distToStop, remOnCurrSeg, pathRemainder, partialFinalSeg, crossFrac);
+                end
+
+            end
+
+             isJunctionRelevant = double(distToStop >= 0);
+
+        end
+
+        %% Helper functions
+        function [junctionUUID,juncIdx] = getApproachingJunction(obj,laneID)
+            % getApproachingJunction finds the approaching junction ID based on
+            % the current lane.
+            % Initialize output
+            junctionUUID = "";
+            juncIdx = -1;
+
+            % Get the current lane object
+            matchIdx = ismember(obj.AllLaneID, string(laneID));
+            if ~any(matchIdx)
+                return;
+            end
+            currLane = obj.RRHDMap.Lanes(matchIdx);
+
+
+            % Check if the the current lane is a junction lane. If so
+            % update junctionUUID & return.
+            [flag, juncIdx] = isJunctionLane(obj,laneID);
+            if flag
+                junctionUUID = obj.RRHDMap.Junctions(juncIdx).ID;
+                return;
+            end
+
+            % If the current lane is not a junction lane find the
+            % approaching junction along the direction of current lane.
+            while ~flag
+                % If travel direction is forward use successors or else use
+                % predecessors to get the next lane.
+                if currLane.TravelDirection == roadrunner.hdmap.TravelDirection.Forward
+                    if ~isempty(currLane.Successors)
+                        nxtLaneID = vertcat(currLane.Successors.Reference.ID);
+                    else
+                        break;
+                    end
+                else
+                    if ~isempty(currLane.Predecessors)
+                        nxtLaneID = vertcat(currLane.Predecessors.Reference.ID);
+                    else
+                        break;
+                    end
+                end
+                % Check if the next lane is a junction lane.
+                [flag, juncIdx] = isJunctionLane(obj,nxtLaneID);
+
+                % If junction lane return the junction ID or else continue
+                % till the end of road.
+                if flag
+                    junctionUUID = obj.RRHDMap.Junctions(juncIdx).ID;
+                    break
+                else
+
+                    % idx = find(obj.AllLaneID == nxtLaneID);
+                    idx = find(ismember(obj.AllLaneID, string(nxtLaneID)));
+                    currLane = obj.RRHDMap.Lanes(idx);
+                end
+            end
+        end
+
+
+        function [flag, juncIdx] = isJunctionLane(obj,laneIDs)
+            %isJunctionLane checks if the input lane ID belongs to the
+            %junctions or not.
+            flag = false;
+            juncIdx = -1;
+            numJun = numel(obj.JunctionLaneID);
+
+            laneIDs = string(laneIDs);   % normalize input type defensively
+
+            for i = 1:numJun
+                currJuncLaneIDs = obj.JunctionLaneID{i};
+
+                if nnz(ismember(laneIDs,currJuncLaneIDs))> 0
+                    flag = true;
+                    juncIdx = i;
+                    return;
+                end
+            end
+        end
+
+
+
+        function isInside = checkPointInsideRegion(~,point, region)
+            %checkPointInsideRegion function checks if a given point is inside
+            % or outside the given region (ray casting algorithm :check is this
+            % point in this shape?)
+            % Initialize counter for crossings
+            crossings = 0;
+
+            % Get the number of vertices of the region
+            numVertices = size(region, 1);
+
+            % Iterate over each pair of consecutive vertices
+            for i = 1:numVertices
+                % Get the current vertex and the next vertex
+                vertex1 = region(i, :);
+                vertex2 = region(mod(i, numVertices) + 1, :);
+
+                % Check if the point lies on the same side of the line as the origin
+                if (vertex1(2) > point(2)) ~= (vertex2(2) > point(2))
+                    % Calculate the x-coordinate of the point where the line crosses the y-coordinate of the point
+                    intersectionX = (vertex2(1) - vertex1(1)) * (point(2) - vertex1(2)) / (vertex2(2) - vertex1(2)) + vertex1(1);
+
+                    % Check if the point lies to the right of the line
+                    if point(1) < intersectionX
+                        % Increment the counter for crossings
+                        crossings = crossings + 1;
+                    end
+                end
+            end
+
+            % Check if the number of crossings is odd
+            isInside = mod(crossings, 2) == 1;
+        end
+
+        function tf = isInsideJunction(obj, pt, jIdx)
+            %isInsideJunction function checks whether the ego vehicle is
+            %in a junction
+            tf = false;
+            %Get the number of polygons for the junction
+            P = obj.RRHDMap.Junctions(jIdx).Geometry.Polygons;
+            for m = 1:numel(P)
+                %Check by walking through all of the polygons
+                if checkPointInsideRegion(obj, pt, P(m).ExteriorRing)
+                    tf = true; return;
+                end
+            end
+        end
+
+        %% Simulink Admin Functions
+        function interface = getInterfaceImpl(~)
+            %Define i/p & o/p ports
+            import matlab.system.interface.*;
+            in1 = Input("in1", Data);
+            in2 = Input("in2", Data);
+            in3 = Input("in3", Message);
+            out1 = Output("out1",Data);
+            out2 = Output("out2",Data);
+            out3 = Output("out3",Data);
+            out4 = Output("out4",Data);
+            out5 = Output("out4",Data);
+            interface = [in1, in2, in3, out1, out2, out3,out4,out5];
+        end
+
+        function [out1, out2, out3,out4,out5] = getOutputSizeImpl(obj)
+            % Return size for each output port
+            out1 = [1,1];
+            out2 = [1 1];
+            out3 = [1 1];
+            out4 = [1 1];
+            out5 = [1 1];
+        end
+
+
+        function [out1, out2, out3,out4,out5] = getOutputDataTypeImpl(obj)
+            % Return data type for each output port
+            out1 = "EnumConfigurationType";
+            out2 = "double";
+            out3 = "double";
+            out4 = "boolean";
+            out5 = "double";
+        end
+
+        function [out1, out2, out3,out4,out5] = isOutputComplexImpl(obj)
+            % Tell Simulink that outputs are real numbers
+            % Return true for each output port with complex data
+            out1 = false;
+            out2 = false;
+            out3 = false;
+            out4 = false;
+            out5 = false;
+        end
+
+        function [out1, out2, out3,out4,out5] = isOutputFixedSizeImpl(obj)
+            % Return true for each output port with fixed size
+            out1 = true;
+            out2 = true;
+            out3 = true;
+            out4 = true;
+            out5 = true;
+        end
+
+        function icon = getIconImpl(obj)
+            % Define icon for System block
+            icon = [mfilename("class")," "," "," "];
+        end
+
+
+
+    end
+
+    methods (Access = protected, Static)
+        function simMode = getSimulateUsingImpl
+            % Return only allowed simulation mode in System block dialog
+            simMode = "Interpreted execution";
+        end
+    end
+end

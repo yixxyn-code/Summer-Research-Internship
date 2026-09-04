@@ -1,0 +1,186 @@
+classdef SurrogateTrafficEnv < rl.env.MATLABEnvironment
+    % SurrogateTrafficEnv - RoadRunner-free stand-in for UNM_TrafficSignalFollower.
+    % Same 9-element observation, same action, same reward shape as the
+    % real model - just no live co-simulation link, so train() can't hit
+    % the RoadRunner interop crash.
+
+    properties
+        % --- Track / signal setup ---
+        StopLinePos     = 60;    % meters, fixed position of the stop line
+        TrackLength     = 120;   % meters, episode ends if ego passes this
+        Ts              = 0.1;   % must match your real model's sample time
+
+        % --- Normalization bounds (match your real obsInfo) ---
+        MaxStopDistance  = 100;
+        MaxPhaseDuration = 60;
+
+        % --- Reward weights (same as UNM_RLRewardFcn) ---
+        DesiredGap             = 10;
+        CollisionGap           = 1.5;
+        SignalViolationPenalty = 100;
+        CollisionPenalty       = 100;
+        GapWeight              = 0.01;
+        JerkWeight             = 0.05;
+        MaxSpeed               = 15;
+    end
+
+    properties (Access = private)
+        EgoPos
+        EgoVel
+        LeadPos
+        LeadVel
+        PhaseState      % 1=Red, 2=Yellow, 3=Green
+        PhaseTimeLeft
+        PrevAccel
+        CrossedStopLine         % latched true once ego passes the stop line this episode
+        CrossedStopLineLastStep % value of CrossedStopLine as of the previous step, for edge detection
+    end
+
+    methods
+        function obj = SurrogateTrafficEnv()
+            % Observation: [distNorm, timeNorm, isRed, isYellow, isGreen,
+            %               isJunctionRelevant, relDist, relVel, egoVel]
+            obsInfo = rlNumericSpec([9 1], ...
+                'LowerLimit', [0; 0; 0; 0; 0; 0;   0; -20;  0], ...
+                'UpperLimit', [1; 1; 1; 1; 1; 1; 100;  20; 15]);
+            obsInfo.Name = "observations";
+
+            actInfo = rlNumericSpec([1 1], 'LowerLimit', -3, 'UpperLimit', 3);  %Cha
+            actInfo.Name = "acceleration";
+
+            obj = obj@rl.env.MATLABEnvironment(obsInfo, actInfo);
+        end
+
+        function InitialObservation = reset(obj)
+            obj.EgoPos = 0;
+            obj.EgoVel = 5 + 3*rand;              % randomize start speed a bit
+            obj.LeadPos = 25 + 15*rand;            % randomize initial gap
+            obj.LeadVel = 4 + 4*rand;              % randomize lead vehicle speed
+            obj.PhaseState = randi(3);             % start in a random phase
+
+            switch obj.PhaseState
+                case 1, obj.PhaseTimeLeft = 8 + 6*rand;
+                case 2, obj.PhaseTimeLeft = 2 + 1*rand;
+                case 3, obj.PhaseTimeLeft = 6 + 6*rand;
+            end      % random time left in that phase
+
+            obj.PrevAccel = 0;
+            obj.CrossedStopLine = false;
+            obj.CrossedStopLineLastStep = false;
+
+            InitialObservation = obj.buildObservation();
+        end
+
+        function [Observation, Reward, IsDone, LoggedSignals] = step(obj, Action)
+
+            accelCmd = min(max(Action, -3), 2);
+
+            % --- integrate ego and lead vehicle ---
+            obj.EgoVel = min(max(obj.EgoVel + accelCmd*obj.Ts, 0), obj.MaxSpeed);
+            obj.EgoPos = obj.EgoPos + obj.EgoVel*obj.Ts;
+            obj.LeadPos = obj.LeadPos + obj.LeadVel*obj.Ts;
+
+            % --- advance signal phase timer, cycle phases ---
+            obj.PhaseTimeLeft = obj.PhaseTimeLeft - obj.Ts;
+            if obj.PhaseTimeLeft <= 0
+                obj.PhaseState = mod(obj.PhaseState, 3) + 1;   % Red->Yellow->Green->Red
+                switch obj.PhaseState
+                    case 1, obj.PhaseTimeLeft = 8 + 6*rand;    % red duration
+                    case 2, obj.PhaseTimeLeft = 2 + 1*rand;     % yellow duration
+                    case 3, obj.PhaseTimeLeft = 6 + 6*rand;     % green duration
+                end
+            end
+
+            distToStop = obj.StopLinePos - obj.EgoPos;
+            if ~obj.CrossedStopLine && distToStop <= 0
+                obj.CrossedStopLine = true;
+            end
+
+            relDist = obj.LeadPos - obj.EgoPos;
+            relVel  = obj.LeadVel - obj.EgoVel;
+
+
+            isRed    = (obj.PhaseState == 1);
+            isYellow = (obj.PhaseState == 2);
+
+
+%NEW
+            vRefGap = obj.LeadVel + 0.3*(relDist - obj.DesiredGap);
+            if isRed || isYellow
+                vRefSignal = 0 + 0.5*max(distToStop, 0);   % treat stop line as a stationary "lead vehicle"
+            else
+                vRefSignal = obj.MaxSpeed;   % unconstrained when green
+            end
+            vRef = max(min(vRefGap, vRefSignal), 0);
+            velError = vRef - obj.EgoVel;
+%
+         
+            wasCrossedBefore = obj.CrossedStopLineLastStep;
+            justCrossedOnRedOrYellow = (~wasCrossedBefore) && obj.CrossedStopLine && (isRed || isYellow);
+            obj.CrossedStopLineLastStep = obj.CrossedStopLine;
+            collided = relDist <= obj.CollisionGap;
+
+            Reward = 0;
+            IsDone = false;
+
+            if justCrossedOnRedOrYellow
+                Reward = Reward - obj.SignalViolationPenalty;
+                IsDone = true;
+            elseif collided
+                Reward = Reward - obj.CollisionPenalty;
+                IsDone = true;
+            else
+                gapError = min(abs(relDist - obj.DesiredGap), 20);   % cap at 20m of error
+                jerk = accelCmd - obj.PrevAccel;
+                Reward = Reward ...
+                    - obj.JerkWeight * jerk^2 ...
+                    - 0.05 * velError^2;   % new: penalize deviating from a sensible target speed, both too slow AND too fast
+            end
+
+            if obj.EgoPos >= obj.TrackLength
+                IsDone = true;   % reached the end of the track cleanly - episode success
+                Reward = Reward + 60;   % success bonus - only reachable by actually moving through
+            end
+
+            if obj.EgoVel < 0.5 && ~(isRed && distToStop < 15)
+                Reward = Reward - 1;   % flat penalty for idling with no red-light justification
+            end
+
+            obj.PrevAccel = accelCmd;
+
+            LoggedSignals = struct( ...
+                'EgoPos', obj.EgoPos, ...
+                'EgoVel', obj.EgoVel, ...
+                'LeadPos', obj.LeadPos, ...
+                'RelDist', relDist, ...
+                'PhaseState', obj.PhaseState, ...   % 1=Red, 2=Yellow, 3=Green
+                'PhaseTimeLeft', obj.PhaseTimeLeft, ...
+                'Reward', Reward);
+
+            Observation = obj.buildObservation();
+        end
+    end
+
+    methods (Access = private)
+        function obs = buildObservation(obj)
+            distToStop = obj.StopLinePos - obj.EgoPos;
+            isJunctionRelevant = double(~obj.CrossedStopLine);
+
+            distClipped = min(max(distToStop, 0), obj.MaxStopDistance);
+            distNorm = distClipped / obj.MaxStopDistance;
+
+            timeClipped = min(max(obj.PhaseTimeLeft, 0), obj.MaxPhaseDuration);
+            timeNorm = timeClipped / obj.MaxPhaseDuration;
+
+            isRed    = double(obj.PhaseState == 1);
+            isYellow = double(obj.PhaseState == 2);
+            isGreen  = double(obj.PhaseState == 3);
+
+            relDist = obj.LeadPos - obj.EgoPos;
+            relVel  = obj.LeadVel - obj.EgoVel;
+
+            obs = [distNorm; timeNorm; isRed; isYellow; isGreen; ...
+                isJunctionRelevant; relDist; relVel; obj.EgoVel];
+        end
+    end
+end
