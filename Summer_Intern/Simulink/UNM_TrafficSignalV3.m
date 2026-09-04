@@ -1,13 +1,8 @@
 classdef UNM_TrafficSignalV3 < matlab.System
-    %HelperGetTrafficSignal Extracts the signal state for the given signal ID.
+    %Extracts the signal state for the given signal ID.
     % From all traffic signal runtime information, this system object filters
     % out the traffic signal runtime information for the given traffic signal
     % actor id.
-    %
-    % NOTE: This is a helper file for example purposes and
-    % may be removed or modified in the future.
-
-    % Copyright 2024 The MathWorks, Inc.
 
     % Public, tunable properties
     properties(Nontunable)
