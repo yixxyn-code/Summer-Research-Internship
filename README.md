@@ -6,7 +6,7 @@ vehicle, developed as part of a digital twin of the UNM campus front junction.
 
 ## Environment
 
-- MATLAB R2025b, Simulink R2025b, Reinforcement Learning Toolbox,
+- MATLAB R2025b, Simulink R2025b, Reinforcement Learning Toolbox, Automated Driving Toolbox 
 - RoadRunner R2026a
 
 ## Repository structure
@@ -51,8 +51,20 @@ Run `Run_Surrogate_DDPG.mlx` in MATLAB. This trains a DDPG agent against
 `SurrogateTrafficEnvACC.m` and saves the result as `trained_agent_ACC.mat`.
 
 **2. Deploy to the live RoadRunner model:**
-Run `RR_Simulink_Co-V2.mlx` to launch RoadRunner,open
-`UNM_TrafficSignalFollower.slx` and run a RoadRunner simulation. 
+Run `RR_Simulink_Co-V2.mlx` to:
+- Closes any existing RoadRunner connection and clears the workspace
+- Launches RoadRunner, opens the UNM junction scene and scenario, and creates a
+  simulation object with data logging enabled (step size 0.1 s)
+- Opens `UNM_TrafficSignalFollower.slx` and loads `trained_agent_ACC.mat`, disabling
+  the agent's exploration policy and setting it as the model's RL Agent block via
+  `set_param`
+- Starts the RoadRunner simulation and waits for it to finish
+- Retrieves the ego vehicle's logged velocity from the RoadRunner simulation log and
+  plots its speed profile over time
+
+Note the hardcoded file paths (`C:\Users\user\OneDrive\Documents\...`) at the top of
+this script — these will need to be updated to match wherever the RoadRunner project,
+scene, scenario, and Simulink model actually live on the machine running this.
 
 **3. Evaluate the trained agent:**
 Run `Evaluate_DDPG.m` for a 30-trial batch evaluation, then `Classify_violations.m`
