@@ -15,8 +15,9 @@ vehicle, developed as part of a digital twin of the UNM campus front junction.
 Summer_Intern/
 ├── UNM_FrontJunct-V2.rrscene        RoadRunner scene: reconstructed UNM junction
 ├── UNM_Eg-Test2.rrscenario          RoadRunner scenario (ego + lead vehicle, signal)
-├── RR_Simulink_Co-V2.mlx            Script to launch RoadRunner + open the Simulink model + run the simulation 
+├── RoadRunner&Simulink_Cosimulate.mlx    (Ignore) Old script to launch RoadRunner + open the Simulink model + run the simulation  
 └── Simulink/
+    ├── RR_Simulink_Co-V2.mlx             MAIN Script to launch RoadRunner + open the Simulink model + load RL agent + run the simulation     
     ├── UNM_TrafficSignalFollower.slx     Top-level Simulink model (final RL-controlled version)
     │
     ├── UNMTrafficSignalFollower_Block.m  Manual rule-based baseline controller
