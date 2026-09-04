@@ -51,7 +51,11 @@ Summer_Intern/
 Run `Run_Surrogate_DDPG.mlx` in MATLAB. This trains a DDPG agent against
 `SurrogateTrafficEnvACC.m` and saves the result as `trained_agent_ACC.mat`.
 
-**2. Deploy to the live RoadRunner model:**
+**2. Evaluate the trained agent:**
+Run `Evaluate_DDPG.m` for a 30-trial batch evaluation, then `Classify_violations.m`
+to split any signal violations into avoidable vs. dilemma-zone.
+
+**3. Deploy to the live RoadRunner model:**
 Run `RR_Simulink_Co-V2.mlx` to:
 - Closes any existing RoadRunner connection and clears the workspace
 - Launches RoadRunner, opens the UNM junction scene and scenario, and creates a
@@ -67,9 +71,7 @@ Note the hardcoded file paths (`C:\Users\user\OneDrive\Documents\...`) at the to
 this script — these will need to be updated to match wherever the RoadRunner project,
 scene, scenario, and Simulink model actually live on the machine running this.
 
-**3. Evaluate the trained agent:**
-Run `Evaluate_DDPG.m` for a 30-trial batch evaluation, then `Classify_violations.m`
-to split any signal violations into avoidable vs. dilemma-zone.
+
 
 
 
