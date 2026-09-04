@@ -6,7 +6,7 @@ vehicle, developed as part of a digital twin of the UNM campus front junction.
 
 ## Environment
 
-- MATLAB R2025b, Simulink R2025b, Reinforcement Learning Toolbox,
+- MATLAB R2025b, Simulink R2025b, Reinforcement Learning Toolbox, Automated Driving Toolbox 
 - RoadRunner R2026a
 
 ## Repository structure
