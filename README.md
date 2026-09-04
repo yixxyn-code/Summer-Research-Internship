@@ -15,12 +15,11 @@ vehicle, developed as part of a digital twin of the UNM campus front junction.
 Summer_Intern/
 ├── UNM_FrontJunct-V2.rrscene        RoadRunner scene: reconstructed UNM junction
 ├── UNM_Eg-Test2.rrscenario          RoadRunner scenario (ego + lead vehicle, signal)
-├── RoadRunner&Simulink_Cosimulate.mlx   Script to launch RoadRunner + open the Simulink model
+├── RR_Simulink_Co-V2.mlx            Script to launch RoadRunner + open the Simulink model + run the simulation 
 └── Simulink/
     ├── UNM_TrafficSignalFollower.slx     Top-level Simulink model (final RL-controlled version)
     │
     ├── UNMTrafficSignalFollower_Block.m  Manual rule-based baseline controller
-    ├── UNM_TrafficSignalV2.m             Baseline signal-reading System object
     ├── UNM_TrafficSignalVisualization.m  GUI for visualising signal/distance state
     ├── UNMPathEvaluator_Block.m          Path-following helper
     │
@@ -33,8 +32,8 @@ Summer_Intern/
     ├── UNM_loadRRBusObject.m             Loads required Simulink bus objects
     │
     ├── SurrogateTrafficEnv.m             Pure-MATLAB surrogate environment (PPO version)
-    ├── SurrogateTrafficEnvACC.m          Pure-MATLAB surrogate environment (final DDPG/ACC version)
-    ├── Run_SurrogateEnv.m                Quick sanity-check script for the surrogate environment
+    ├── SurrogateTrafficEnvACC.m          Pure-MATLAB surrogate environment (final DDPG version)
+    ├── Run_SurrogateEnv.m                Full PPO training script (builds agent, trains, evaluates)
     ├── Run_Surrogate_DDPG.mlx            Full DDPG training script (builds agent, trains, evaluates)
     ├── Evaluate_DDPG.m                   30-trial batch evaluation (collision/violation/completion)
     ├── Classify_violations.m             Splits violations into avoidable vs. dilemma-zone
@@ -61,10 +60,6 @@ to split any signal violations into avoidable vs. dilemma-zone.
 
 
 
-- A residual avoidable signal-violation rate remains under the current trained agent
-  (see report, Results and Discussion, Section C).
 
-## Note on repository contents
 
-An unrelated Unreal Engine project (`ProjectFiles_UAV/`) may be present in earlier commits
-and should be disregarded / removed — it is not part of this project.
+
